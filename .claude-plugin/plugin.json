@@ -1,0 +1,93 @@
+{
+  "name": "evols",
+  "version": "1.0.0",
+  "description": "Eliminate handoff tax. Team knowledge graph + token savings tracking for Claude Code.",
+  "author": {
+    "name": "Evols AI",
+    "url": "https://evols.ai"
+  },
+  "homepage": "https://evols.ai",
+  "keywords": ["knowledge-graph", "token-savings", "team-intelligence", "redundancy-detection"],
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "diff -q \"${CLAUDE_PLUGIN_ROOT}/plugin/mcp_server/requirements.txt\" \"${CLAUDE_PLUGIN_DATA}/requirements.txt\" >/dev/null 2>&1 || (python3 -m venv \"${CLAUDE_PLUGIN_DATA}/venv\" && \"${CLAUDE_PLUGIN_DATA}/venv/bin/pip\" install -q -r \"${CLAUDE_PLUGIN_ROOT}/plugin/mcp_server/requirements.txt\" && cp \"${CLAUDE_PLUGIN_ROOT}/plugin/mcp_server/requirements.txt\" \"${CLAUDE_PLUGIN_DATA}/requirements.txt\") || rm -f \"${CLAUDE_PLUGIN_DATA}/requirements.txt\""
+          },
+          {
+            "type": "command",
+            "command": "python3 ${CLAUDE_PLUGIN_ROOT}/plugin/hooks/session_start.py"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ${CLAUDE_PLUGIN_ROOT}/plugin/hooks/user_prompt_submit.py"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ${CLAUDE_PLUGIN_ROOT}/plugin/hooks/post_tool_use.py"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ${CLAUDE_PLUGIN_ROOT}/plugin/hooks/stop.py"
+          }
+        ]
+      }
+    ],
+    "StopFailure": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ${CLAUDE_PLUGIN_ROOT}/plugin/hooks/stop.py --failure"
+          }
+        ]
+      }
+    ]
+  },
+  "mcpServers": {
+    "evols": {
+      "command": "${CLAUDE_PLUGIN_DATA}/venv/bin/python3",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/plugin/mcp_server/server.py"],
+      "env": {
+        "EVOLS_API_URL": "${user_config.EVOLS_API_URL}",
+        "EVOLS_API_KEY": "${user_config.EVOLS_API_KEY}",
+        "EVOLS_PLAN": "${user_config.EVOLS_PLAN}"
+      }
+    }
+  },
+  "userConfig": {
+    "EVOLS_API_URL": {
+      "description": "Your Evols workspace URL (e.g. https://evols-backend-kdqer5oyua-uc.a.run.app)",
+      "required": true
+    },
+    "EVOLS_API_KEY": {
+      "description": "Your Evols API key — go to Settings → API Keys → New Key (starts with evols_)",
+      "required": true,
+      "sensitive": true
+    },
+    "EVOLS_PLAN": {
+      "description": "Your Claude plan: pro, max, team, or enterprise",
+      "default": "pro"
+    }
+  }
+}
