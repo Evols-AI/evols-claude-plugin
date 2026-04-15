@@ -139,14 +139,34 @@ Plugin updates happen automatically if auto-update is enabled (default for marke
 
 ## Configuration
 
-All configuration is set at install time via `userConfig` prompts. To change a value after installation, uninstall and reinstall:
+### VSCode extension (current workaround)
+
+The VSCode Manage Plugins UI does not currently show a config form after installation. Create `~/.evols/config.json` manually with your credentials:
+
+```json
+{
+  "api_url": "https://your-backend.run.app",
+  "api_key": "evols_...",
+  "plan_type": "pro"
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `api_url` | Your Evols backend URL — find it in your Evols dashboard |
+| `api_key` | From Settings → API Keys → New Key (starts with `evols_`) |
+| `plan_type` | `pro`, `max`, `team`, or `enterprise` (default: `pro`) |
+
+The plugin reads this file at every session start. No restart required once the file exists.
+
+### CLI
+
+Configuration is set at install time via prompts. To change a value after installation:
 
 ```
 /plugin uninstall evols@evols-ai
 /plugin install evols@evols-ai
 ```
-
-The API key (`EVOLS_API_KEY`) is stored in your system keychain. On macOS this is Keychain Access; on Linux it falls back to `~/.claude/.credentials.json`.
 
 > **Note on JWT tokens**: If you copy a JWT from your browser session instead of generating a proper API key, it will expire in 24 hours and hooks will silently fail. Always use a long-lived `evols_...` key from Settings → API Keys → New Key.
 
