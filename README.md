@@ -16,7 +16,7 @@ Eliminate handoff tax. The Evols plugin connects Claude Code to your team's shar
 
 ## Installation
 
-Works identically in the **Claude Code CLI** and the **VSCode extension**.
+### CLI
 
 **Step 1 — Add the Evols marketplace:**
 ```
@@ -28,18 +28,30 @@ Works identically in the **Claude Code CLI** and the **VSCode extension**.
 /plugin install evols@evols-ai
 ```
 
-Claude Code will prompt you for three values:
+**Step 3 — Activate:**
+```
+/reload-plugins
+```
+
+### VSCode extension
+
+The VSCode extension uses a dedicated UI instead of slash commands:
+
+1. Click **Manage Plugins** in the Claude Code panel
+2. Go to the **Marketplaces** tab → **Add marketplace** → enter `Evols-AI/evols-claude-plugin`
+3. Go to the **Discover** tab → find **evols** → click **Install**
+4. Enter your API URL, API key, and plan when prompted
+5. Click **Reload plugins** to activate
+
+---
+
+During install, Claude Code prompts for three values:
 
 | Field | Description |
 |-------|-------------|
 | **Evols API URL** | Your workspace URL — find it in your Evols dashboard |
 | **Evols API Key** | From Settings → API Keys → New Key (starts with `evols_`). Stored in your system keychain — never written to disk in plain text. |
 | **Claude plan** | `pro`, `max`, `team`, or `enterprise`. Defaults to `pro`. Used to calculate quota percentages in the session summary. |
-
-**Step 3 — Activate:**
-```
-/reload-plugins
-```
 
 On the next session start, the plugin automatically creates a Python venv and installs its dependencies. This happens once and repeats only when dependencies change.
 
