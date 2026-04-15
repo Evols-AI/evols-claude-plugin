@@ -106,6 +106,17 @@ def main():
         print(json.dumps({"systemMessage": "[Evols] Your config uses a JWT token which expires in 24h. Go to Settings → API Keys → New Key and update ~/.evols/config.json with an evols_... key."}))
 
     # ── First prompt of session: init state + inject context + redundancy check ──
+    # If session_state exists but belongs to a different session_id, it's stale — clean it up
+    current_session_id = hook_input.get("session_id", "")
+    if SESSION_STATE_FILE.exists() and current_session_id:
+        try:
+            with open(SESSION_STATE_FILE) as f:
+                saved = json.load(f)
+            if saved.get("session_id") != current_session_id:
+                SESSION_STATE_FILE.unlink()
+        except Exception:
+            SESSION_STATE_FILE.unlink(missing_ok=True)
+
     is_first_prompt = not SESSION_STATE_FILE.exists()
 
     if is_first_prompt:
