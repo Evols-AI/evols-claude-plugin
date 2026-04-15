@@ -61,17 +61,13 @@ def main():
     # Load config
     config = load_config()
     if not config:
-        print("\n[Evols] Not configured. Create ~/.evols/config.json with your API credentials:\n"
-              '  {"api_url": "https://...", "api_key": "evols_...", "plan_type": "pro"}\n'
-              "Get your URL and key from your Evols dashboard.\n")
+        print(json.dumps({"systemMessage": "[Evols] Not configured. Create ~/.evols/config.json:\n  {\"api_url\": \"https://...\", \"api_key\": \"evols_...\", \"plan_type\": \"pro\"}\nGet your credentials from your Evols dashboard."}))
         sys.exit(0)
 
     api_url = config.get("api_url", "")
     api_key = config.get("api_key", "")
     if not api_url or not api_key:
-        print("\n[Evols] Not configured. Create ~/.evols/config.json with your API credentials:\n"
-              '  {"api_url": "https://...", "api_key": "evols_...", "plan_type": "pro"}\n'
-              "Get your URL and key from your Evols dashboard.\n")
+        print(json.dumps({"systemMessage": "[Evols] Not configured. Create ~/.evols/config.json:\n  {\"api_url\": \"https://...\", \"api_key\": \"evols_...\", \"plan_type\": \"pro\"}\nGet your credentials from your Evols dashboard."}))
         sys.exit(0)
 
     # Initialize session state.
@@ -93,9 +89,7 @@ def main():
     context_data = fetch_relevant_context(api_url, api_key, query=cwd, top_k=5)
 
     if not context_data or context_data.get("entry_count", 0) == 0:
-        # No relevant context yet — print welcome message on first use
-        print("\n[Evols] Team knowledge graph: no relevant context yet for this workspace. "
-              "Context will build as your team works.\n")
+        print(json.dumps({"systemMessage": "[Evols] Team knowledge graph active. No relevant context yet for this workspace — context will build as your team works."}))
         sys.exit(0)
 
     # Update session state with retrieved tokens
@@ -107,13 +101,10 @@ def main():
     tokens_retrieved = context_data.get("tokens_retrieved", 0)
     tokens_saved = context_data.get("tokens_saved_estimate", 0)
     entry_count = context_data.get("entry_count", 0)
+    context_text = context_data.get("context_text", "")
 
-    output_lines = [
-        f"\n[Evols] Loaded {entry_count} team knowledge entries "
-        f"({tokens_retrieved} tokens retrieved · ~{tokens_saved} tokens saved vs. compiling fresh)\n",
-        context_data.get("context_text", ""),
-    ]
-    print("\n".join(output_lines))
+    header = f"[Evols] Loaded {entry_count} team knowledge entries ({tokens_retrieved} tokens retrieved · ~{tokens_saved} tokens saved vs. compiling fresh)"
+    print(json.dumps({"systemMessage": f"{header}\n\n{context_text}"}))
     sys.exit(0)
 
 
