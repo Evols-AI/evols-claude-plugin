@@ -1,12 +1,22 @@
 {
+  "name": "evols-ai",
+  "owner": {
+    "name": "Evols AI",
+    "email": "team@evols.ai"
+  },
+  "metadata": {
+    "description": "Evols AI plugins for Claude Code — team knowledge graph and token savings tracking."
+  },
   "plugins": [
     {
-      "id": "evols",
-      "name": "Evols Team Intelligence",
+      "name": "evols",
+      "source": "./",
       "description": "Eliminate handoff tax. Team knowledge graph + token savings tracking. Detects when teammates already solved the same problem and injects their findings automatically.",
-      "repository": "Evols-AI/evols-claude-plugin",
-      "manifest_path": ".claude-plugin/plugin.json",
-      "categories": ["productivity", "team", "knowledge"],
+      "author": {
+        "name": "Evols AI"
+      },
+      "homepage": "https://evols.ai",
+      "category": "productivity",
       "tags": ["knowledge-graph", "token-savings", "team-intelligence", "redundancy-detection"]
     }
   ]

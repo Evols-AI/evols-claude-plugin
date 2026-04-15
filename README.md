@@ -25,7 +25,7 @@ Works identically in the **Claude Code CLI** and the **VSCode extension**.
 
 **Step 2 — Install the plugin:**
 ```
-/plugin install evols@Evols-AI-evols-claude-plugin
+/plugin install evols@evols-ai
 ```
 
 Claude Code will prompt you for three values:
@@ -119,7 +119,7 @@ Claude calls `sync_session_context`, adds the entry, then asks which product (if
 Plugin updates happen automatically if auto-update is enabled (default for marketplace plugins). To update manually:
 
 ```
-/plugin update evols@Evols-AI-evols-claude-plugin
+/plugin update evols@evols-ai
 /reload-plugins
 ```
 
@@ -130,8 +130,8 @@ Plugin updates happen automatically if auto-update is enabled (default for marke
 All configuration is set at install time via `userConfig` prompts. To change a value after installation, uninstall and reinstall:
 
 ```
-/plugin uninstall evols@Evols-AI-evols-claude-plugin
-/plugin install evols@Evols-AI-evols-claude-plugin
+/plugin uninstall evols@evols-ai
+/plugin install evols@evols-ai
 ```
 
 The API key (`EVOLS_API_KEY`) is stored in your system keychain. On macOS this is Keychain Access; on Linux it falls back to `~/.claude/.credentials.json`.
@@ -198,4 +198,5 @@ To make the plugin discoverable at `/plugin install evols@claude-plugins-officia
 Until then, users add the Evols marketplace directly:
 ```
 /plugin marketplace add Evols-AI/evols-claude-plugin
+/plugin install evols@evols-ai
 ```
