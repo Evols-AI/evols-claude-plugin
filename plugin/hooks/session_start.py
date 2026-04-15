@@ -61,12 +61,13 @@ def main():
     # Load config
     config = load_config()
     if not config:
-        # Plugin not configured — silent exit
+        print("\n[Evols] Plugin not configured. Go to Manage Plugins → evols → Configure and enter your API URL and API key.\n")
         sys.exit(0)
 
     api_url = config.get("api_url", "")
     api_key = config.get("api_key", "")
     if not api_url or not api_key:
+        print("\n[Evols] Plugin not configured. Go to Manage Plugins → evols → Configure and enter your API URL and API key.\n")
         sys.exit(0)
 
     # Initialize session state.
