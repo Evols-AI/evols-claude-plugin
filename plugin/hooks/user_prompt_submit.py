@@ -95,6 +95,7 @@ def main():
 
     config = load_config()
     if not config:
+        print(json.dumps({"systemMessage": "[Evols] Not configured. Create ~/.evols/config.json:\n  {\"api_url\": \"https://...\", \"api_key\": \"evols_...\", \"plan_type\": \"pro\"}\nGet your credentials from your Evols dashboard."}))
         sys.exit(0)
 
     api_url = config.get("api_url", "")
@@ -102,12 +103,7 @@ def main():
 
     # Warn if config has a JWT instead of a long-lived API key
     if api_key.startswith("eyJ"):
-        print(
-            "\n[Evols] ⚠  Your config uses a JWT token which expires in 24h.\n"
-            "         Go to Settings → API Keys → New Key and update ~/.evols/config.json\n"
-            "         with an 'evols_...' key to avoid silent auth failures.\n",
-            file=sys.stderr
-        )
+        print(json.dumps({"systemMessage": "[Evols] Your config uses a JWT token which expires in 24h. Go to Settings → API Keys → New Key and update ~/.evols/config.json with an evols_... key."}))
 
     # ── First prompt of session: init state + inject context + redundancy check ──
     is_first_prompt = not SESSION_STATE_FILE.exists()
@@ -121,8 +117,7 @@ def main():
             context_data = fetch_relevant_context(api_url, api_key, query=cwd, top_k=5)
 
             if not context_data or context_data.get("entry_count", 0) == 0:
-                print("\n[Evols] Team knowledge graph active. No relevant context yet — "
-                      "use sync_session_context to add your first entry.\n", file=sys.stderr)
+                print(json.dumps({"systemMessage": "[Evols] Team knowledge graph active. No relevant context yet — use sync_session_context to add your first entry."}))
             else:
                 tokens_retrieved = context_data.get("tokens_retrieved", 0)
                 tokens_saved = context_data.get("tokens_saved_estimate", 0)
@@ -133,11 +128,7 @@ def main():
                 with open(SESSION_STATE_FILE, "w") as f:
                     json.dump(state, f)
 
-                print(
-                    f"\n[Evols] {entry_count} team knowledge entries loaded "
-                    f"({tokens_retrieved} tokens · ~{tokens_saved} saved vs. fresh)\n",
-                    file=sys.stderr
-                )
+                print(json.dumps({"systemMessage": f"[Evols] {entry_count} team knowledge entries loaded ({tokens_retrieved} tokens · ~{tokens_saved} saved vs. fresh)"}))
 
             # 2. Redundancy check — show prior work inline if a teammate solved this recently
             prompt_text = hook_input.get("prompt", "") or ""
@@ -150,18 +141,17 @@ def main():
                     saving = redundancy.get("estimated_saving", 0)
                     preview = best.get("content_preview", "")
                     sep = "-" * 60
-                    print(
-                        f"\n[Evols] Prior team work found ({best.get('similarity', 0):.0%} match)\n"
+                    msg = (
+                        f"[Evols] Prior team work found ({best.get('similarity', 0):.0%} match)\n"
                         f"{sep}\n"
                         f"  \"{best['title']}\"\n"
                         f"  {hours_ago:.0f}h ago · ~{token_cost:,} tokens · ~{saving:,} tokens saved if reused\n"
                         f"{sep}\n"
                         f"{preview}\n"
                         f"{sep}\n"
-                        f"Continuing with your prompt. Reference the above if it covers your need.\n"
-                        f"To abort: Ctrl+C\n",
-                        file=sys.stderr
+                        f"Continuing with your prompt. Reference the above if it covers your need."
                     )
+                    print(json.dumps({"systemMessage": msg}))
 
     sys.exit(0)
 
