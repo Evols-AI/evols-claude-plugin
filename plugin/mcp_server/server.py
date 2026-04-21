@@ -343,6 +343,52 @@ def check_redundancy(task_description: str, lookback_hours: int = 48) -> str:
 
 
 @mcp.tool()
+def get_pm_skill(skill_name: str) -> str:
+    """
+    Load full instructions for an Evols PM skill.
+
+    Call this when the user's request maps to one of the PM skills listed in
+    the session system message. Once loaded, follow the skill's instructions
+    for the rest of the conversation.
+
+    Args:
+        skill_name: Exact skill name from the catalog (e.g. "identify-assumptions", "business-model")
+    """
+    config = load_config()
+    api_url = config.get("api_url", "")
+    api_key = config.get("api_key", "")
+
+    if not api_url or not api_key:
+        return "Evols not configured. Run the install script: bash ~/.evols/install.sh"
+
+    try:
+        resp = requests.get(
+            f"{api_url.rstrip('/')}/api/v1/copilot/skills/{skill_name}",
+            headers=api_headers(api_key),
+            timeout=10,
+        )
+        if resp.status_code == 404:
+            return f"Skill '{skill_name}' not found. Check the skill name from the session catalog."
+        resp.raise_for_status()
+        skill = resp.json()
+    except Exception as e:
+        return f"Could not load skill '{skill_name}': {e}"
+
+    name = skill.get("name", skill_name)
+    description = skill.get("description", "")
+    instructions = skill.get("instructions", "")
+    category = skill.get("category", "")
+
+    header = f"## Skill: {name}"
+    if category:
+        header += f" [{category}]"
+    if description:
+        header += f"\n{description}"
+
+    return f"{header}\n\n{instructions}"
+
+
+@mcp.tool()
 def get_quota_status(days: int = 7) -> str:
     """
     Show your team's token savings summary.

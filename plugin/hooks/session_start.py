@@ -13,6 +13,7 @@ import os
 import uuid
 import urllib.request
 import urllib.error
+import urllib.parse
 from datetime import datetime
 from pathlib import Path
 
@@ -32,6 +33,31 @@ def load_config():
         return None
     with open(CONFIG_FILE) as f:
         return json.load(f)
+
+
+def fetch_pm_skills_catalog(api_url, api_key):
+    """Call GET /api/v1/copilot/skills to get the lightweight skills catalog."""
+    url = f"{api_url.rstrip('/')}/api/v1/copilot/skills"
+    req = urllib.request.Request(url, headers={"Authorization": f"Bearer {api_key}"})
+    try:
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            skills = json.loads(resp.read())
+        if not skills:
+            return None
+        # Build a lightweight catalog grouped by category (names + descriptions only)
+        lines = ["## PM Skills Available", ""]
+        for skill in skills:
+            name = skill.get("name", "")
+            desc = skill.get("description", "")
+            lines.append(f"- **{name}**: {desc}")
+        lines += [
+            "",
+            "To apply a skill, call the `get_pm_skill` MCP tool with the skill name.",
+            "Then follow those instructions for the rest of the conversation.",
+        ]
+        return "\n".join(lines)
+    except Exception:
+        return None
 
 
 def fetch_relevant_context(api_url, api_key, query, top_k=5):
@@ -85,26 +111,36 @@ def main():
     with open(SESSION_STATE_FILE, "w") as f:
         json.dump(session_state, f)
 
-    # Fetch relevant context using cwd as query hint
+    # Fetch PM skills catalog and team knowledge in parallel (sequential here, both fast)
+    skills_catalog = fetch_pm_skills_catalog(api_url, api_key)
     context_data = fetch_relevant_context(api_url, api_key, query=cwd, top_k=5)
 
+    sections = []
+
+    # PM skills section
+    if skills_catalog:
+        sections.append(
+            "[Evols] PM Skills loaded. When the user's request maps to one of the skills below, "
+            "call `get_pm_skill` with that skill name to load full instructions, then apply them.\n\n"
+            + skills_catalog
+        )
+
+    # Team knowledge section
     if not context_data or context_data.get("entry_count", 0) == 0:
-        print(json.dumps({"systemMessage": "[Evols] Team knowledge graph active. No relevant context yet for this workspace — context will build as your team works."}))
-        sys.exit(0)
+        sections.append("[Evols] Team knowledge graph active. No relevant context yet for this workspace — context will build as your team works.")
+    else:
+        session_state["tokens_retrieved"] = context_data.get("tokens_retrieved", 0)
+        with open(SESSION_STATE_FILE, "w") as f:
+            json.dump(session_state, f)
 
-    # Update session state with retrieved tokens
-    session_state["tokens_retrieved"] = context_data.get("tokens_retrieved", 0)
-    with open(SESSION_STATE_FILE, "w") as f:
-        json.dump(session_state, f)
+        tokens_retrieved = context_data.get("tokens_retrieved", 0)
+        tokens_saved = context_data.get("tokens_saved_estimate", 0)
+        entry_count = context_data.get("entry_count", 0)
+        context_text = context_data.get("context_text", "")
+        header = f"[Evols] Loaded {entry_count} team knowledge entries ({tokens_retrieved} tokens retrieved · ~{tokens_saved} tokens saved vs. compiling fresh)"
+        sections.append(f"{header}\n\n{context_text}")
 
-    # Output context to inject into session
-    tokens_retrieved = context_data.get("tokens_retrieved", 0)
-    tokens_saved = context_data.get("tokens_saved_estimate", 0)
-    entry_count = context_data.get("entry_count", 0)
-    context_text = context_data.get("context_text", "")
-
-    header = f"[Evols] Loaded {entry_count} team knowledge entries ({tokens_retrieved} tokens retrieved · ~{tokens_saved} tokens saved vs. compiling fresh)"
-    print(json.dumps({"systemMessage": f"{header}\n\n{context_text}"}))
+    print(json.dumps({"systemMessage": "\n\n---\n\n".join(sections)}))
     sys.exit(0)
 
 
