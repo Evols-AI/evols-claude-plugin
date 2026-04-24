@@ -41,6 +41,44 @@ def load_config():
         return json.load(f)
 
 
+def load_lightrag_config() -> dict | None:
+    """Load LightRAG connection details from env or ~/.evols/config.json."""
+    url = os.environ.get("LIGHTRAG_URL") or os.environ.get("CLAUDE_PLUGIN_OPTION_LIGHTRAG_URL", "")
+    api_key = os.environ.get("LIGHTRAG_API_KEY") or os.environ.get("CLAUDE_PLUGIN_OPTION_LIGHTRAG_API_KEY", "")
+    if url:
+        return {"url": url.rstrip("/"), "api_key": api_key}
+    config_file = Path.home() / ".evols" / "config.json"
+    if config_file.exists():
+        try:
+            with open(config_file) as f:
+                cfg = json.load(f)
+            lr_url = cfg.get("lightrag_url", "")
+            if lr_url:
+                return {"url": lr_url.rstrip("/"), "api_key": cfg.get("lightrag_api_key", "")}
+        except Exception:
+            pass
+    return None
+
+
+def forward_summary_to_lightrag(lightrag_cfg: dict, title: str, content: str, session_id: str) -> None:
+    """POST a session summary document to LightRAG."""
+    text = f"# {title}\n\n{content}"
+    payload = json.dumps({"text": text, "file_source": f"session_summary/{session_id}"}).encode("utf-8")
+    headers = {"Content-Type": "application/json"}
+    if lightrag_cfg.get("api_key"):
+        headers["Authorization"] = f"Bearer {lightrag_cfg['api_key']}"
+    try:
+        req = urllib.request.Request(
+            f"{lightrag_cfg['url']}/documents/text",
+            data=payload,
+            headers=headers,
+            method="POST",
+        )
+        urllib.request.urlopen(req, timeout=8)
+    except Exception:
+        pass
+
+
 def parse_transcript_usage(transcript_path: str) -> dict:
     """
     Parse the session JSONL transcript to get exact token counts.
@@ -109,11 +147,19 @@ def extract_transcript_text(transcript_path: str) -> str:
     return "\n".join(lines_out[-60:])  # Last 60 turns to stay within context
 
 
+# Module-level slot so callers can access the last extracted knowledge dict
+_last_extracted_knowledge: dict | None = None
+
+
 def auto_sync_knowledge(api_url, api_key, session_id, transcript_text, token_count, plan_type):
     """
     Call Anthropic API (Haiku) to extract structured knowledge from the session,
     then POST it to the team knowledge graph.
+    Also stores the extracted dict in _last_extracted_knowledge for LightRAG forwarding.
     """
+    global _last_extracted_knowledge
+    _last_extracted_knowledge = None
+
     try:
         import urllib.request
 
@@ -164,6 +210,7 @@ def auto_sync_knowledge(api_url, api_key, session_id, transcript_text, token_cou
             if raw.startswith("json"):
                 raw = raw[4:]
         extracted = json.loads(raw.strip())
+        _last_extracted_knowledge = extracted
 
         # POST to Evols API
         sync_payload = {
@@ -269,12 +316,23 @@ def main():
 
     # ── Auto-sync knowledge via Haiku ──────────────────────────────
     synced_entry_id = None
+    extracted_knowledge = None
     if not is_failure and transcript_path and total_tokens > 500:
         transcript_text = extract_transcript_text(transcript_path)
         if transcript_text:
             synced_entry_id = auto_sync_knowledge(
                 api_url, api_key, session_id, transcript_text, total_tokens, plan_type
             )
+            extracted_knowledge = _last_extracted_knowledge
+
+    # ── Forward session summary to LightRAG knowledge graph ────────
+    if extracted_knowledge and not is_failure:
+        lightrag_cfg = load_lightrag_config()
+        if lightrag_cfg:
+            title = extracted_knowledge.get("title", f"Session {session_id}")
+            content = extracted_knowledge.get("content", "")
+            if content:
+                forward_summary_to_lightrag(lightrag_cfg, title, content, session_id)
 
     # ── Display summary ────────────────────────────────────────────
     daily_limit = PLAN_DAILY_LIMITS.get(plan_type, 88000)

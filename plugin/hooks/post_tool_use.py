@@ -24,6 +24,12 @@ REDUNDANCY_CHECK_TOOLS = {"Bash", "WebFetch"}
 # Tools whose outputs are worth capturing for knowledge sync context
 KNOWLEDGE_TOOLS = {"Write", "Edit", "Bash", "WebFetch"}
 
+# MCP tool prefix — any tool matching this is forwarded to LightRAG
+MCP_TOOL_PREFIX = "mcp__"
+
+# Minimum response length worth indexing (skip empty pings, tiny acks)
+LIGHTRAG_MIN_LENGTH = 80
+
 SIMILARITY_THRESHOLD = 0.75
 LOOKBACK_HOURS = 48
 
@@ -39,6 +45,38 @@ def load_config():
         return None
     with open(CONFIG_FILE) as f:
         return json.load(f)
+
+
+def load_lightrag_config() -> dict | None:
+    """Load LightRAG connection details from env or ~/.evols/config.json."""
+    url = os.environ.get("LIGHTRAG_URL") or os.environ.get("CLAUDE_PLUGIN_OPTION_LIGHTRAG_URL", "")
+    api_key = os.environ.get("LIGHTRAG_API_KEY") or os.environ.get("CLAUDE_PLUGIN_OPTION_LIGHTRAG_API_KEY", "")
+    if url:
+        return {"url": url.rstrip("/"), "api_key": api_key}
+    if CONFIG_FILE.exists():
+        try:
+            with open(CONFIG_FILE) as f:
+                cfg = json.load(f)
+            lr_url = cfg.get("lightrag_url", "")
+            if lr_url:
+                return {"url": lr_url.rstrip("/"), "api_key": cfg.get("lightrag_api_key", "")}
+        except Exception:
+            pass
+    return None
+
+
+def forward_to_lightrag(lightrag_cfg: dict, text: str, source_label: str) -> None:
+    """POST a text document to LightRAG asynchronously (fire-and-forget)."""
+    url = f"{lightrag_cfg['url']}/documents/text"
+    payload = json.dumps({"text": text, "file_source": source_label}).encode("utf-8")
+    headers = {"Content-Type": "application/json"}
+    if lightrag_cfg.get("api_key"):
+        headers["Authorization"] = f"Bearer {lightrag_cfg['api_key']}"
+    try:
+        req = urllib.request.Request(url, data=payload, headers=headers, method="POST")
+        urllib.request.urlopen(req, timeout=5)
+    except Exception:
+        pass
 
 
 def extract_task_description(tool_name: str, tool_input: dict) -> str:
@@ -118,7 +156,22 @@ def main():
     except Exception:
         pass
 
-    # ── 2. Sub-task redundancy check for expensive tools ──────────────────────
+    # ── 2. Forward MCP tool responses to LightRAG knowledge graph ─────────────
+    if tool_name.startswith(MCP_TOOL_PREFIX) and len(str(tool_output)) >= LIGHTRAG_MIN_LENGTH:
+        lightrag_cfg = load_lightrag_config()
+        if lightrag_cfg:
+            # Label: "mcp__slack__list_messages / session_abc123"
+            session_id = "unknown"
+            try:
+                if SESSION_STATE_FILE.exists():
+                    with open(SESSION_STATE_FILE) as f:
+                        session_id = json.load(f).get("session_id", "unknown")
+            except Exception:
+                pass
+            source_label = f"{tool_name}/{session_id}"
+            forward_to_lightrag(lightrag_cfg, str(tool_output), source_label)
+
+    # ── 3. Sub-task redundancy check for expensive tools ──────────────────────
     if tool_name not in REDUNDANCY_CHECK_TOOLS:
         sys.exit(0)
 

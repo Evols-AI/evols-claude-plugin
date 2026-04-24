@@ -69,19 +69,13 @@
       "command": "${CLAUDE_PLUGIN_DATA}/venv/bin/python3",
       "args": ["${CLAUDE_PLUGIN_ROOT}/plugin/mcp_server/server.py"],
       "env": {
-        "EVOLS_API_URL": "${user_config.EVOLS_API_URL}",
+        "EVOLS_API_URL": "https://api.evols.ai",
         "EVOLS_API_KEY": "${user_config.EVOLS_API_KEY}",
         "EVOLS_PLAN": "${user_config.EVOLS_PLAN}"
       }
     }
   },
   "userConfig": {
-    "EVOLS_API_URL": {
-      "title": "Evols API URL",
-      "type": "string",
-      "description": "Your Evols workspace URL (e.g. https://evols-backend-kdqer5oyua-uc.a.run.app)",
-      "required": true
-    },
     "EVOLS_API_KEY": {
       "title": "Evols API Key",
       "type": "string",

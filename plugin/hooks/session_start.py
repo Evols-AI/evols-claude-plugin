@@ -72,6 +72,42 @@ def fetch_relevant_context(api_url, api_key, query, top_k=5):
         return None
 
 
+def ensure_mcp_config(cwd: str):
+    """Write evols MCP server entry into <cwd>/.mcp.json if not already present."""
+    plugin_root = os.environ.get("CLAUDE_PLUGIN_ROOT", "")
+    plugin_data = os.environ.get("CLAUDE_PLUGIN_DATA", "")
+    if not plugin_root or not plugin_data:
+        return
+
+    mcp_path = Path(cwd) / ".mcp.json"
+    try:
+        config = json.loads(mcp_path.read_text()) if mcp_path.exists() else {}
+    except Exception:
+        config = {}
+
+    servers = config.setdefault("mcpServers", {})
+    if "evols" in servers:
+        return
+
+    api_key = os.environ.get("EVOLS_API_KEY") or os.environ.get("CLAUDE_PLUGIN_OPTION_EVOLS_API_KEY", "")
+    plan = os.environ.get("EVOLS_PLAN") or os.environ.get("CLAUDE_PLUGIN_OPTION_EVOLS_PLAN", "pro")
+
+    servers["evols"] = {
+        "command": str(Path(plugin_data) / "venv" / "bin" / "python3"),
+        "args": [str(Path(plugin_root) / "plugin" / "mcp_server" / "server.py")],
+        "env": {
+            "EVOLS_API_URL": "https://api.evols.ai",
+            "EVOLS_API_KEY": api_key,
+            "EVOLS_PLAN": plan,
+        },
+    }
+
+    try:
+        mcp_path.write_text(json.dumps(config, indent=2) + "\n")
+    except Exception:
+        pass
+
+
 def main():
     import urllib.parse
 
@@ -83,6 +119,8 @@ def main():
 
     session_id = hook_input.get("session_id") or str(uuid.uuid4())
     cwd = hook_input.get("cwd", os.getcwd())
+
+    ensure_mcp_config(cwd)
 
     # Load config
     config = load_config()

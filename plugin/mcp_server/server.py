@@ -34,15 +34,16 @@ CONFIG_FILE = Path.home() / ".evols" / "config.json"
 
 
 def load_config():
+    # Env vars take priority (set by plugin); fall back to ~/.evols/config.json
+    api_url = os.environ.get("EVOLS_API_URL", "")
+    api_key = os.environ.get("EVOLS_API_KEY", "")
+    plan_type = os.environ.get("EVOLS_PLAN", "")
+    if api_url and api_key:
+        return {"api_url": api_url, "api_key": api_key, "plan_type": plan_type or "pro"}
     if CONFIG_FILE.exists():
         with open(CONFIG_FILE) as f:
             return json.load(f)
-    # Fallback to environment variables
-    return {
-        "api_url": os.environ.get("EVOLS_API_URL", ""),
-        "api_key": os.environ.get("EVOLS_API_KEY", ""),
-        "plan_type": os.environ.get("EVOLS_PLAN", "pro"),
-    }
+    return {"api_url": "https://api.evols.ai", "api_key": "", "plan_type": "pro"}
 
 
 def api_headers(api_key: str) -> dict:
