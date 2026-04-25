@@ -65,13 +65,41 @@ def load_lightrag_config() -> dict | None:
     return None
 
 
+def get_lightrag_jwt(lightrag_cfg: dict) -> str:
+    """Exchange API key for a JWT via /login (form-encoded). Caches in session_state."""
+    try:
+        state_path = SESSION_STATE_FILE
+        if state_path.exists():
+            state = json.loads(state_path.read_text())
+            cached = state.get("lightrag_jwt", "")
+            if cached:
+                return cached
+        api_key = lightrag_cfg.get("api_key", "")
+        if not api_key:
+            return ""
+        data = urllib.parse.urlencode({"username": "evols", "password": api_key}).encode()
+        req = urllib.request.Request(
+            f"{lightrag_cfg['url']}/login", data=data, method="POST"
+        )
+        resp = urllib.request.urlopen(req, timeout=5)
+        token = json.loads(resp.read()).get("access_token", "")
+        if token and state_path.exists():
+            state = json.loads(state_path.read_text())
+            state["lightrag_jwt"] = token
+            state_path.write_text(json.dumps(state))
+        return token
+    except Exception:
+        return ""
+
+
 def forward_to_lightrag(lightrag_cfg: dict, text: str, source_label: str) -> None:
     """POST a text document to LightRAG asynchronously (fire-and-forget)."""
     url = f"{lightrag_cfg['url']}/documents/text"
     payload = json.dumps({"text": text, "file_source": source_label}).encode("utf-8")
+    token = get_lightrag_jwt(lightrag_cfg)
     headers = {"Content-Type": "application/json"}
-    if lightrag_cfg.get("api_key"):
-        headers["Authorization"] = f"Bearer {lightrag_cfg['api_key']}"
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
     try:
         req = urllib.request.Request(url, data=payload, headers=headers, method="POST")
         urllib.request.urlopen(req, timeout=5)
