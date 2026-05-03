@@ -19,12 +19,23 @@ from datetime import datetime
 EVOLS_DIR = Path.home() / ".evols"
 CONFIG_FILE = EVOLS_DIR / "config.json"
 SESSION_STATE_FILE = EVOLS_DIR / "session_state.json"
+PRICING_FILE = EVOLS_DIR / "pricing.json"
+BLOCK_STATE_FILE = EVOLS_DIR / "block_state.json"
 
 PLAN_DAILY_LIMITS = {
     "pro": 88000,
     "max": 220000,
     "team": 440000,
     "enterprise": 880000,
+}
+
+# Claude Code subscription resets every 5 hours, not daily
+BLOCK_HOURS = 5
+PLAN_BLOCK_LIMITS = {
+    "pro": 22000,
+    "max": 55000,
+    "team": 110000,
+    "enterprise": 220000,
 }
 
 
@@ -106,18 +117,84 @@ def forward_summary_to_lightrag(lightrag_cfg: dict, title: str, content: str, se
         pass
 
 
+_FALLBACK_PRICING = {
+    # (input_per_mtok, output_per_mtok, cache_read_per_mtok, cache_write_per_mtok)
+    "opus":   (5.00, 25.00, 0.50, 6.25),
+    "sonnet": (3.00, 15.00, 0.30, 3.75),
+    "haiku":  (1.00,  5.00, 0.10, 1.25),
+}
+
+
+def load_pricing() -> dict:
+    """
+    Load model pricing from ~/.evols/pricing.json (updated at install time from LiteLLM).
+    Falls back to hardcoded defaults if file is missing or malformed.
+    Expected format: {"opus": [5.0, 25.0, 0.5, 6.25], "sonnet": [...], "haiku": [...]}
+    """
+    try:
+        if PRICING_FILE.exists():
+            with open(PRICING_FILE) as f:
+                data = json.load(f)
+            pricing = {}
+            for tier in ("opus", "sonnet", "haiku"):
+                v = data.get(tier)
+                if v and len(v) == 4:
+                    pricing[tier] = tuple(float(x) for x in v)
+            if len(pricing) == 3:
+                return pricing
+    except Exception:
+        pass
+    return dict(_FALLBACK_PRICING)
+
+
+MODEL_PRICING = load_pricing()
+
+
+def model_tier(model_id: str) -> str:
+    """Map a full model ID string to pricing tier key."""
+    m = model_id.lower()
+    if "opus" in m:
+        return "opus"
+    if "haiku" in m:
+        return "haiku"
+    return "sonnet"  # default — covers sonnet + unknown models
+
+
+def compute_cost(model_id: str, input_tokens: int, output_tokens: int,
+                 cache_read: int, cache_write: int) -> float:
+    tier = model_tier(model_id)
+    ir, or_, cr, cw = MODEL_PRICING[tier]
+    return (
+        input_tokens  * ir +
+        output_tokens * or_ +
+        cache_read    * cr +
+        cache_write   * cw
+    ) / 1_000_000
+
+
 def parse_transcript_usage(transcript_path: str) -> dict:
     """
     Parse the session JSONL transcript to get exact token counts.
-    Each assistant message entry contains a 'message.usage' object
-    with the real API token counts — no estimation needed.
+
+    Claude Code writes multiple JSONL lines per API response (one per streaming chunk),
+    all sharing the same message.id. Each chunk's usage fields are cumulative totals,
+    not deltas — so summing them would massively overcount. We keep only the LAST
+    record per message.id, which contains the final usage tally for that response.
+
+    Claude also writes a costUSD field at the top level of some entries — we prefer
+    this pre-calculated value over our own compute_cost() estimate.
     """
-    totals = {
+    # message_id -> (usage dict, model string) for that message — last write wins
+    per_message: dict[str, tuple] = {}
+    no_id_totals = {
         "input_tokens": 0,
         "output_tokens": 0,
         "cache_creation_input_tokens": 0,
         "cache_read_input_tokens": 0,
     }
+    model_seen = ""
+    cost_usd_sum = 0.0
+    has_cost_usd = False
     try:
         with open(transcript_path) as f:
             for line in f:
@@ -126,14 +203,38 @@ def parse_transcript_usage(transcript_path: str) -> dict:
                     continue
                 try:
                     entry = json.loads(line)
-                    usage = entry.get("message", {}).get("usage", {})
-                    if usage:
-                        for key in totals:
-                            totals[key] += usage.get(key, 0)
+                    # Extract pre-calculated cost when Claude provides it
+                    if "costUSD" in entry:
+                        cost_usd_sum += float(entry["costUSD"])
+                        has_cost_usd = True
+                    msg = entry.get("message", {})
+                    usage = msg.get("usage", {})
+                    if not usage:
+                        continue
+                    model = msg.get("model", "")
+                    if model:
+                        model_seen = model  # last model seen wins (highest tier for mixed sessions)
+                    message_id = msg.get("id")
+                    if message_id:
+                        per_message[message_id] = (usage, model)
+                    else:
+                        for key in no_id_totals:
+                            no_id_totals[key] += usage.get(key, 0)
                 except Exception:
                     continue
     except Exception:
         pass
+
+    totals = dict(no_id_totals)
+    for usage, model in per_message.values():
+        for key in totals:
+            totals[key] += usage.get(key, 0)
+        if model:
+            model_seen = model
+
+    totals["model"] = model_seen
+    if has_cost_usd:
+        totals["cost_usd"] = cost_usd_sum
     return totals
 
 
@@ -178,7 +279,8 @@ def extract_transcript_text(transcript_path: str) -> str:
 _last_extracted_knowledge: dict | None = None
 
 
-def auto_sync_knowledge(api_url, api_key, session_id, transcript_text, token_count, plan_type):
+def auto_sync_knowledge(api_url, api_key, session_id, transcript_text, token_count, plan_type,
+                        files_read=None, files_modified=None, discovery_tokens=0, model=""):
     """
     Call Anthropic API (Haiku) to extract structured knowledge from the session,
     then POST it to the team knowledge graph.
@@ -250,6 +352,10 @@ def auto_sync_knowledge(api_url, api_key, session_id, transcript_text, token_cou
             "product_area": extracted.get("product_area") or None,
             "source_session_id": session_id,
             "session_tokens_used": token_count,
+            "discovery_tokens": discovery_tokens or None,
+            "files_read": files_read or [],
+            "files_modified": files_modified or [],
+            "model": model or None,
         }
 
         sync_req = urllib.request.Request(
@@ -283,6 +389,10 @@ def post_quota_event(api_url, api_key, payload):
 
 
 def main():
+    # Reload pricing in case session_start refreshed it during this session
+    global MODEL_PRICING
+    MODEL_PRICING = load_pricing()
+
     is_failure = "--failure" in sys.argv
 
     try:
@@ -311,44 +421,92 @@ def main():
     cache_read_tokens = usage.get("cache_read_input_tokens", 0)
     cache_create_tokens = usage.get("cache_creation_input_tokens", 0)
     total_tokens = input_tokens + output_tokens + cache_create_tokens
+    model = usage.get("model", "") or "claude-sonnet"
+    # Prefer costUSD written by Claude into the transcript; fall back to our calculation
+    if "cost_usd" in usage:
+        session_cost_usd = usage["cost_usd"]
+    else:
+        session_cost_usd = compute_cost(model, input_tokens, output_tokens, cache_read_tokens, cache_create_tokens)
     # Cache reads are discounted (0.1x) — count them separately for display
 
-    # ── Get tokens_retrieved from session state ────────────────────
+    # ── Get tokens_retrieved + granular capture from session state ─
     tokens_retrieved = 0
+    actual_savings_override = None
     session_id = "unknown"
     cwd = ""
+    files_read = []
+    files_modified = []
+    discovery_tokens = 0
+    started_at_str = ""
     if SESSION_STATE_FILE.exists():
         try:
             with open(SESSION_STATE_FILE) as f:
                 state = json.load(f)
             tokens_retrieved = state.get("tokens_retrieved", 0)
+            if "actual_savings" in state:
+                actual_savings_override = state["actual_savings"]
             session_id = state.get("session_id", "unknown")
             cwd = state.get("cwd", "")
+            files_read = state.get("files_read", [])
+            files_modified = state.get("files_modified", [])
+            discovery_tokens = state.get("discovery_tokens", 0)
+            started_at_str = state.get("started_at", "")
         except Exception:
             pass
 
-    tokens_saved = tokens_retrieved * 7  # 8x compression ratio
+    # ── Compute burn rate (tokens per minute) ─────────────────────
+    burn_rate_per_min = 0.0
+    session_minutes = 0.0
+    if started_at_str:
+        try:
+            started_at = datetime.fromisoformat(started_at_str)
+            session_minutes = (datetime.utcnow() - started_at).total_seconds() / 60.0
+            if session_minutes >= 1.0:
+                burn_rate_per_min = total_tokens / session_minutes
+        except Exception:
+            pass
 
-    # ── Sync quota event to API ────────────────────────────────────
-    event_type = "rate_limit_hit" if is_failure else "session_end"
-    post_quota_event(api_url, api_key, {
-        "session_id": session_id,
-        "tokens_used": total_tokens,
-        "tokens_retrieved": tokens_retrieved,
-        "event_type": event_type,
-        "tool_name": "claude-code",
-        "plan_type": plan_type,
-        "cwd": cwd,
-    })
+    # ── 5-hour billing block tracking ──────────────────────────────
+    # Claude Code quota resets every BLOCK_HOURS, not daily.
+    # Track cumulative tokens in the current block via block_state.json.
+    block_tokens_total = total_tokens
+    block_start = datetime.utcnow()
+    block_time_remaining_min = BLOCK_HOURS * 60.0
+    try:
+        if BLOCK_STATE_FILE.exists():
+            with open(BLOCK_STATE_FILE) as f:
+                block_state = json.load(f)
+            block_start = datetime.fromisoformat(block_state.get("block_start", datetime.utcnow().isoformat()))
+            elapsed_h = (datetime.utcnow() - block_start).total_seconds() / 3600.0
+            if elapsed_h < BLOCK_HOURS:
+                block_tokens_total = block_state.get("block_tokens", 0) + total_tokens
+                block_time_remaining_min = (BLOCK_HOURS - elapsed_h) * 60.0
+            else:
+                # Block expired — start a new one
+                block_start = datetime.utcnow()
+                block_tokens_total = total_tokens
+                block_time_remaining_min = BLOCK_HOURS * 60.0
+        else:
+            block_start = datetime.utcnow()
 
-    # ── Auto-sync knowledge via Haiku ──────────────────────────────
+        with open(BLOCK_STATE_FILE, "w") as f:
+            json.dump({
+                "block_start": block_start.isoformat(),
+                "block_tokens": block_tokens_total,
+            }, f)
+    except Exception:
+        pass
+
+    # ── Auto-sync knowledge via Haiku (run first so we know if new knowledge was created) ──
     synced_entry_id = None
     extracted_knowledge = None
     if not is_failure and transcript_path and total_tokens > 500:
         transcript_text = extract_transcript_text(transcript_path)
         if transcript_text:
             synced_entry_id = auto_sync_knowledge(
-                api_url, api_key, session_id, transcript_text, total_tokens, plan_type
+                api_url, api_key, session_id, transcript_text, total_tokens, plan_type,
+                files_read=files_read, files_modified=files_modified,
+                discovery_tokens=discovery_tokens, model=model,
             )
             extracted_knowledge = _last_extracted_knowledge
 
@@ -361,25 +519,59 @@ def main():
             if content:
                 forward_summary_to_lightrag(lightrag_cfg, title, content, session_id)
 
+    # ── Sync quota event to API ────────────────────────────────────
+    # tokens_created: the full session cost is the investment when new knowledge was synced.
+    # Only count as investment when we actually created a knowledge entry (not SKIP sessions).
+    tokens_created = total_tokens if synced_entry_id else 0
+    event_type = "rate_limit_hit" if is_failure else "session_end"
+    quota_payload = {
+        "session_id": session_id,
+        "tokens_used": total_tokens,
+        "tokens_retrieved": tokens_retrieved,
+        "tokens_created": tokens_created,
+        "event_type": event_type,
+        "tool_name": "claude-code",
+        "plan_type": plan_type,
+        "model": model,
+        "cost_usd": round(session_cost_usd, 6),
+        "cwd": cwd,
+    }
+    if actual_savings_override is not None:
+        quota_payload["actual_savings_override"] = actual_savings_override
+    post_quota_event(api_url, api_key, quota_payload)
+
     # ── Display summary ────────────────────────────────────────────
-    daily_limit = PLAN_DAILY_LIMITS.get(plan_type, 88000)
-    quota_pct = round((total_tokens / daily_limit) * 100, 1) if daily_limit else 0
+    block_limit = PLAN_BLOCK_LIMITS.get(plan_type, 22000)
+    block_pct = round((block_tokens_total / block_limit) * 100, 1) if block_limit else 0
+    block_remaining_h = int(block_time_remaining_min // 60)
+    block_remaining_m = int(block_time_remaining_min % 60)
 
     if is_failure:
         print(f"\n[Evols] Session ended due to rate limit.")
-        print(f"  Tokens used: {total_tokens:,}  ({quota_pct}% of {plan_type} daily quota)")
+        print(f"  Tokens used this session: {total_tokens:,}")
+        print(f"  5h block usage:  {block_tokens_total:,} / {block_limit:,}  ({block_pct}%  ·  resets in {block_remaining_h}h {block_remaining_m}m)")
         print(f"  This event has been recorded for your team's quota tracking.\n")
     else:
         print(f"\n[Evols] Session complete.")
+        print(f"  Model:          {model}")
         print(f"  Input tokens:   {input_tokens:,}")
         print(f"  Output tokens:  {output_tokens:,}")
         if cache_read_tokens:
             print(f"  Cache reads:    {cache_read_tokens:,}  (discounted)")
-        print(f"  Session total:  {total_tokens:,}  ({quota_pct}% of {plan_type} daily quota)")
+        print(f"  Session total:  {total_tokens:,}  ({round(session_minutes)}m)")
+        if burn_rate_per_min >= 1.0:
+            projected_block = int(burn_rate_per_min * BLOCK_HOURS * 60)
+            print(f"  Burn rate:      {burn_rate_per_min:.0f} tok/min  →  ~{projected_block:,} projected/block")
+        print(f"  Session cost:   ${session_cost_usd:.4f}")
+        print(f"  5h block usage: {block_tokens_total:,} / {block_limit:,}  ({block_pct}%  ·  resets in {block_remaining_h}h {block_remaining_m}m)")
         if tokens_retrieved > 0:
-            print(f"  Team context:   {tokens_retrieved:,} tokens retrieved · ~{tokens_saved:,} saved vs. compiling fresh")
+            # Use similarity-weighted savings from session state; fall back to flat if missing
+            display_savings = actual_savings_override if actual_savings_override is not None else tokens_retrieved * 7
+            print(f"  Team context:   {tokens_retrieved:,} tokens retrieved  →  ~{display_savings:,} tokens saved vs. compiling fresh")
         if synced_entry_id:
-            print(f"  Knowledge sync: entry #{synced_entry_id} added to team graph automatically")
+            # This session created knowledge — savings come later when teammates retrieve it
+            print(f"  Knowledge sync: entry #{synced_entry_id} added to team graph  (investment: {tokens_created:,} tokens)")
+            print(f"                  Savings realized when you or teammates retrieve this context in future sessions.")
         else:
             print(f"  Knowledge sync: call sync_session_context to share insights with your team")
         print()

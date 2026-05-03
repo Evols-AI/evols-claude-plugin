@@ -20,6 +20,53 @@ from pathlib import Path
 EVOLS_DIR = Path.home() / ".evols"
 CONFIG_FILE = EVOLS_DIR / "config.json"
 SESSION_STATE_FILE = EVOLS_DIR / "session_state.json"
+PRICING_FILE = EVOLS_DIR / "pricing.json"
+
+# LiteLLM community pricing source — refreshed once per day at session start
+LITELLM_PRICING_URL = "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json"
+
+# Tier-to-model-ID fragments used to map LiteLLM entries to our tiers
+_LITELLM_TIER_KEYS = {
+    "opus":   ["claude-opus-4",   "claude-3-opus"],
+    "sonnet": ["claude-sonnet-4", "claude-3-5-sonnet"],
+    "haiku":  ["claude-haiku-4",  "claude-3-5-haiku", "claude-3-haiku"],
+}
+
+
+def refresh_pricing_cache() -> None:
+    """
+    Fetch LiteLLM pricing JSON and write ~/.evols/pricing.json.
+    Only refreshes if the file is older than 24 h or missing.
+    Silently skips on any network or parse error — hardcoded fallback remains.
+    """
+    try:
+        if PRICING_FILE.exists():
+            age_h = (datetime.utcnow() - datetime.utcfromtimestamp(PRICING_FILE.stat().st_mtime)).total_seconds() / 3600
+            if age_h < 24:
+                return
+        req = urllib.request.Request(LITELLM_PRICING_URL, headers={"User-Agent": "evols-plugin/1.0"})
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            raw = json.loads(resp.read())
+
+        pricing = {}
+        for tier, keys in _LITELLM_TIER_KEYS.items():
+            for key in keys:
+                entry = raw.get(key, {})
+                ir = entry.get("input_cost_per_token")
+                or_ = entry.get("output_cost_per_token")
+                if ir and or_:
+                    cr = entry.get("cache_read_input_token_cost", ir * 0.1)
+                    cw = entry.get("cache_creation_input_token_cost", ir * 1.25)
+                    # LiteLLM stores per-token; we store per-MTok
+                    pricing[tier] = [ir * 1e6, or_ * 1e6, cr * 1e6, cw * 1e6]
+                    break  # use first match for this tier
+
+        if len(pricing) == 3:
+            EVOLS_DIR.mkdir(parents=True, exist_ok=True)
+            with open(PRICING_FILE, "w") as f:
+                json.dump(pricing, f)
+    except Exception:
+        pass
 
 
 def load_config():
@@ -35,7 +82,7 @@ def load_config():
         return json.load(f)
 
 
-def fetch_pm_skills_catalog(api_url, api_key):
+def fetch_skills_catalog(api_url, api_key):
     """Call GET /api/v1/copilot/skills to get the lightweight skills catalog."""
     url = f"{api_url.rstrip('/')}/api/v1/copilot/skills"
     req = urllib.request.Request(url, headers={"Authorization": f"Bearer {api_key}"})
@@ -45,14 +92,14 @@ def fetch_pm_skills_catalog(api_url, api_key):
         if not skills:
             return None
         # Build a lightweight catalog grouped by category (names + descriptions only)
-        lines = ["## PM Skills Available", ""]
+        lines = ["## AI Skills Available", ""]
         for skill in skills:
             name = skill.get("name", "")
             desc = skill.get("description", "")
             lines.append(f"- **{name}**: {desc}")
         lines += [
             "",
-            "To apply a skill, call the `get_pm_skill` MCP tool with the skill name.",
+            "To apply a skill, call the `get_skill` MCP tool with the skill name.",
             "Then follow those instructions for the rest of the conversation.",
         ]
         return "\n".join(lines)
@@ -120,6 +167,9 @@ def main():
     session_id = hook_input.get("session_id") or str(uuid.uuid4())
     cwd = hook_input.get("cwd", os.getcwd())
 
+    # Refresh LiteLLM pricing cache in the background (max once/day, silent on failure)
+    refresh_pricing_cache()
+
     ensure_mcp_config(cwd)
 
     # Load config
@@ -136,30 +186,34 @@ def main():
 
     # Initialize session state.
     # tokens_input/output are NOT tracked here — exact counts come from transcript_path JSONL at session end.
-    # Only tokens_retrieved is tracked (comes from Evols API, not in transcript).
+    # tokens_retrieved and actual_savings come from the Evols API at session start.
     EVOLS_DIR.mkdir(parents=True, exist_ok=True)
     session_state = {
         "session_id": session_id,
         "cwd": cwd,
         "started_at": datetime.utcnow().isoformat(),
         "tokens_retrieved": 0,
+        "actual_savings": 0,   # similarity-weighted, set below if context was loaded
         "tool_outputs": [],
+        "files_read": [],
+        "files_modified": [],
+        "discovery_tokens": 0,
         "plan_type": config.get("plan_type", "pro"),
     }
     with open(SESSION_STATE_FILE, "w") as f:
         json.dump(session_state, f)
 
-    # Fetch PM skills catalog and team knowledge in parallel (sequential here, both fast)
-    skills_catalog = fetch_pm_skills_catalog(api_url, api_key)
+    # Fetch AI skills catalog and team knowledge in parallel (sequential here, both fast)
+    skills_catalog = fetch_skills_catalog(api_url, api_key)
     context_data = fetch_relevant_context(api_url, api_key, query=cwd, top_k=5)
 
     sections = []
 
-    # PM skills section
+    # AI skills section
     if skills_catalog:
         sections.append(
-            "[Evols] PM Skills loaded. When the user's request maps to one of the skills below, "
-            "call `get_pm_skill` with that skill name to load full instructions, then apply them.\n\n"
+            "[Evols] AI Skills loaded. When the user's request maps to one of the skills below, "
+            "call `get_skill` with that skill name to load full instructions, then apply them.\n\n"
             + skills_catalog
         )
 
@@ -167,15 +221,17 @@ def main():
     if not context_data or context_data.get("entry_count", 0) == 0:
         sections.append("[Evols] Team knowledge graph active. No relevant context yet for this workspace — context will build as your team works.")
     else:
-        session_state["tokens_retrieved"] = context_data.get("tokens_retrieved", 0)
+        tokens_retrieved = context_data.get("tokens_retrieved", 0)
+        # actual_savings is similarity-weighted by the backend — more honest than flat tokens_retrieved * 7
+        actual_savings = context_data.get("actual_savings", context_data.get("tokens_saved_estimate", 0))
+        session_state["tokens_retrieved"] = tokens_retrieved
+        session_state["actual_savings"] = actual_savings
         with open(SESSION_STATE_FILE, "w") as f:
             json.dump(session_state, f)
 
-        tokens_retrieved = context_data.get("tokens_retrieved", 0)
-        tokens_saved = context_data.get("tokens_saved_estimate", 0)
         entry_count = context_data.get("entry_count", 0)
         context_text = context_data.get("context_text", "")
-        header = f"[Evols] Loaded {entry_count} team knowledge entries ({tokens_retrieved} tokens retrieved · ~{tokens_saved} tokens saved vs. compiling fresh)"
+        header = f"[Evols] Loaded {entry_count} team knowledge entries ({tokens_retrieved:,} tokens retrieved · ~{actual_savings:,} tokens saved vs. compiling fresh)"
         sections.append(f"{header}\n\n{context_text}")
 
     print(json.dumps({"systemMessage": "\n\n---\n\n".join(sections)}))

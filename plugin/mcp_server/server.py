@@ -34,10 +34,12 @@ CONFIG_FILE = Path.home() / ".evols" / "config.json"
 
 
 def load_config():
-    # Env vars take priority (set by plugin); fall back to ~/.evols/config.json
-    api_url = os.environ.get("EVOLS_API_URL", "")
-    api_key = os.environ.get("EVOLS_API_KEY", "")
-    plan_type = os.environ.get("EVOLS_PLAN", "")
+    # Sensitive userConfig values (api_key) are stored in the system keychain and passed
+    # as CLAUDE_PLUGIN_OPTION_* env vars — not substituted into mcpServers env blocks.
+    # Non-sensitive values (api_url, plan) are substituted directly as EVOLS_* env vars.
+    api_url = os.environ.get("EVOLS_API_URL", "") or os.environ.get("CLAUDE_PLUGIN_OPTION_EVOLS_API_URL", "")
+    api_key = os.environ.get("EVOLS_API_KEY", "") or os.environ.get("CLAUDE_PLUGIN_OPTION_EVOLS_API_KEY", "")
+    plan_type = os.environ.get("EVOLS_PLAN", "") or os.environ.get("CLAUDE_PLUGIN_OPTION_EVOLS_PLAN", "")
     if api_url and api_key:
         return {"api_url": api_url, "api_key": api_key, "plan_type": plan_type or "pro"}
     if CONFIG_FILE.exists():
@@ -344,11 +346,11 @@ def check_redundancy(task_description: str, lookback_hours: int = 48) -> str:
 
 
 @mcp.tool()
-def get_pm_skill(skill_name: str) -> str:
+def get_skill(skill_name: str) -> str:
     """
-    Load full instructions for an Evols PM skill.
+    Load full instructions for an Evols AI skill.
 
-    Call this when the user's request maps to one of the PM skills listed in
+    Call this when the user's request maps to one of the AI skills listed in
     the session system message. Once loaded, follow the skill's instructions
     for the rest of the conversation.
 

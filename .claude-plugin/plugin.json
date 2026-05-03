@@ -69,7 +69,7 @@
       "command": "${CLAUDE_PLUGIN_DATA}/venv/bin/python3",
       "args": ["${CLAUDE_PLUGIN_ROOT}/plugin/mcp_server/server.py"],
       "env": {
-        "EVOLS_API_URL": "https://api.evols.ai",
+        "EVOLS_API_URL": "${user_config.EVOLS_API_URL}",
         "EVOLS_API_KEY": "${user_config.EVOLS_API_KEY}",
         "EVOLS_PLAN": "${user_config.EVOLS_PLAN}"
       }
@@ -80,8 +80,14 @@
       "title": "Evols API Key",
       "type": "string",
       "description": "Your Evols API key — go to Settings → API Keys → New Key (starts with evols_)",
-      "sensitive": true,
+      "sensitive": false,
       "required": true
+    },
+    "EVOLS_API_URL": {
+      "title": "Evols API URL",
+      "type": "string",
+      "description": "Evols backend URL. Leave as default unless self-hosting.",
+      "default": "https://api.evols.ai"
     },
     "EVOLS_PLAN": {
       "title": "Claude Plan",

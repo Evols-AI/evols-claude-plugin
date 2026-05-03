@@ -171,14 +171,43 @@ def main():
     if isinstance(tool_output, dict):
         tool_output = json.dumps(tool_output)
 
-    # ── 1. Capture notable outputs for Stop hook auto-sync ─────────────────────
+    # ── 1. Capture granular file + discovery data for Stop hook auto-sync ────────
     try:
         if SESSION_STATE_FILE.exists() and tool_name in KNOWLEDGE_TOOLS and len(str(tool_output)) > 200:
             with open(SESSION_STATE_FILE) as f:
                 state = json.load(f)
+
+            # Accumulate files_read and files_modified
+            files_read = state.get("files_read", [])
+            files_modified = state.get("files_modified", [])
+            if tool_name == "Read":
+                path = tool_input.get("file_path", "")
+                if path and path not in files_read:
+                    files_read.append(path)
+            elif tool_name in ("Write", "Edit"):
+                path = tool_input.get("file_path", "")
+                if path and path not in files_modified:
+                    files_modified.append(path)
+            elif tool_name == "Bash":
+                # Heuristic: capture output-redirected paths from command string
+                cmd = tool_input.get("command", "")
+                for part in cmd.split():
+                    if part.startswith("/") and "." in part.split("/")[-1]:
+                        if part not in files_modified:
+                            files_modified.append(part)
+
+            # Accumulate raw output size for discovery_tokens (chars // 4 ≈ tokens)
+            discovery_tokens = state.get("discovery_tokens", 0)
+            discovery_tokens += max(0, len(str(tool_output)) // 4)
+
+            # Keep last 20 output summaries for context
             outputs = state.get("tool_outputs", [])
             outputs.append({"tool": tool_name, "summary": str(tool_output)[:300]})
-            state["tool_outputs"] = outputs[-20:]  # Keep last 20
+
+            state["files_read"] = files_read[:50]      # cap at 50 paths
+            state["files_modified"] = files_modified[:50]
+            state["discovery_tokens"] = discovery_tokens
+            state["tool_outputs"] = outputs[-20:]
             with open(SESSION_STATE_FILE, "w") as f:
                 json.dump(state, f)
     except Exception:
